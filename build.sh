@@ -14,14 +14,14 @@ if [ ! -d "venv" ]; then
     python3 -m venv venv
 fi
 
-# 激活虚拟环境
+# 激活虚拟环境（使用绝对路径）
 echo "✓ 激活虚拟环境..."
-source venv/bin/activate
+VENV_BIN="venv/bin"
 
 # 安装/更新 PyInstaller
 echo ""
 echo "✓ 检查 PyInstaller..."
-pip install pyinstaller --upgrade -q
+$VENV_BIN/pip install pyinstaller --upgrade -q
 
 # 清理旧的构建文件
 echo ""
@@ -35,7 +35,7 @@ echo "║                    开始打包，请稍候...                        
 echo "╚══════════════════════════════════════════════════════════════════╝"
 echo ""
 
-pyinstaller yolo_system.spec --clean
+$VENV_BIN/pyinstaller yolo_system.spec --clean
 
 # 检查打包结果
 if [ $? -eq 0 ]; then

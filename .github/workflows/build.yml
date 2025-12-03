@@ -1,0 +1,119 @@
+name: Build Executables
+
+on:
+  push:
+    tags:
+      - 'v*'  # 当推送 v* 标签时触发（如 v1.0.0）
+  workflow_dispatch:  # 手动触发
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller yolo_system.spec --clean
+
+      - name: Create ZIP archive
+        run: |
+          cd dist
+          Compress-Archive -Path "YOLOv8训练系统" -DestinationPath "YOLOv8训练系统-Windows.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YOLOv8训练系统-Windows
+          path: dist/YOLOv8训练系统-Windows.zip
+
+  build-macos:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller yolo_system.spec --clean
+
+      - name: Create ZIP archive
+        run: |
+          cd dist
+          zip -r YOLOv8训练系统-macOS.zip "YOLOv8训练系统"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YOLOv8训练系统-macOS
+          path: dist/YOLOv8训练系统-macOS.zip
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Build with PyInstaller
+        run: |
+          pyinstaller yolo_system.spec --clean
+
+      - name: Create TAR archive
+        run: |
+          cd dist
+          tar -czf YOLOv8训练系统-Linux.tar.gz "YOLOv8训练系统"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YOLOv8训练系统-Linux
+          path: dist/YOLOv8训练系统-Linux.tar.gz
+
+  create-release:
+    needs: [build-windows, build-macos, build-linux]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            YOLOv8训练系统-Windows/YOLOv8训练系统-Windows.zip
+            YOLOv8训练系统-macOS/YOLOv8训练系统-macOS.zip
+            YOLOv8训练系统-Linux/YOLOv8训练系统-Linux.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
