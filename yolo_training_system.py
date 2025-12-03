@@ -23,13 +23,36 @@ app.config['MAX_CONTENT_LENGTH'] = 50 * 1024 * 1024  # 50MB限制
 WORKSPACE = Path('yolo_workspace')
 WORKSPACE.mkdir(exist_ok=True)
 
+# 数据集配置文件
+DATASET_CONFIG_FILE = WORKSPACE / 'dataset_config.json'
+
+def load_dataset_config():
+    """加载数据集配置"""
+    if DATASET_CONFIG_FILE.exists():
+        with open(DATASET_CONFIG_FILE, 'r', encoding='utf-8') as f:
+            config = json.load(f)
+            return Path(config.get('dataset_path', str(WORKSPACE / 'dataset')))
+    return WORKSPACE / 'dataset'
+
+def save_dataset_config(dataset_path):
+    """保存数据集配置"""
+    with open(DATASET_CONFIG_FILE, 'w', encoding='utf-8') as f:
+        json.dump({'dataset_path': str(dataset_path)}, f, ensure_ascii=False, indent=2)
+
 # 数据集目录
-DATASET_DIR = WORKSPACE / 'dataset'
-DATASET_DIR.mkdir(exist_ok=True)
-(DATASET_DIR / 'images' / 'train').mkdir(parents=True, exist_ok=True)
-(DATASET_DIR / 'images' / 'val').mkdir(parents=True, exist_ok=True)
-(DATASET_DIR / 'labels' / 'train').mkdir(parents=True, exist_ok=True)
-(DATASET_DIR / 'labels' / 'val').mkdir(parents=True, exist_ok=True)
+DATASET_DIR = load_dataset_config()
+
+def ensure_dataset_structure(dataset_dir):
+    """确保数据集目录结构存在"""
+    dataset_dir = Path(dataset_dir)
+    dataset_dir.mkdir(exist_ok=True)
+    (dataset_dir / 'images' / 'train').mkdir(parents=True, exist_ok=True)
+    (dataset_dir / 'images' / 'val').mkdir(parents=True, exist_ok=True)
+    (dataset_dir / 'labels' / 'train').mkdir(parents=True, exist_ok=True)
+    (dataset_dir / 'labels' / 'val').mkdir(parents=True, exist_ok=True)
+    return dataset_dir
+
+ensure_dataset_structure(DATASET_DIR)
 
 # 训练模型保存目录
 MODELS_DIR = WORKSPACE / 'models'
@@ -419,6 +442,17 @@ def index():
         <!-- 标签页1: 设置类别 -->
         <div id="classes-tab" class="tab-content active">
             <div class="section">
+                <div class="section-title">⚙️ 数据集配置</div>
+                <div class="warning-box">
+                    <strong>💾 数据集路径设置:</strong> 可以自定义数据集保存位置
+                </div>
+                <div class="form-group">
+                    <label>数据集保存路径</label>
+                    <input type="text" id="datasetPath" value="{DATASET_DIR.absolute()}" placeholder="输入数据集绝对路径">
+                    <button class="btn btn-secondary" onclick="updateDatasetPath()" style="margin-top: 10px;">💾 更新路径</button>
+                </div>
+            </div>
+            <div class="section">
                 <div class="section-title">📝 定义检测类别</div>
                 <div class="info-box">
                     <strong>💡 提示:</strong> 先定义你要检测的物体类别，例如：person, car, dog, cat, chair
@@ -448,10 +482,10 @@ def index():
                 <div class="info-box">
                     <strong>💡 使用说明:</strong>
                     <ol style="margin-left: 20px; margin-top: 10px;">
-                        <li>上传图片到训练集或验证集</li>
+                        <li>选择图片文件夹批量导入，或单独上传图片</li>
                         <li>在图片上拖动鼠标框选物体</li>
                         <li>选择物体类别并保存</li>
-                        <li>重复以上步骤标注所有图片</li>
+                        <li>自动跳转到下一张未标注图片</li>
                     </ol>
                 </div>
                 <div class="form-group">
@@ -461,9 +495,27 @@ def index():
                         <option value="val">验证集 (20%图片)</option>
                     </select>
                 </div>
-                <div class="form-group">
-                    <label>上传图片</label>
-                    <input type="file" id="imageUpload" accept="image/*" onchange="loadImage()" multiple>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>方式1: 选择图片文件夹（推荐）</label>
+                        <input type="text" id="folderPath" placeholder="输入文件夹绝对路径">
+                        <button class="btn btn-secondary" onclick="loadFolderImages()" style="margin-top: 10px;">📁 加载文件夹</button>
+                    </div>
+                    <div class="form-group">
+                        <label>方式2: 单独上传图片</label>
+                        <input type="file" id="imageUpload" accept="image/*" onchange="loadSingleImage()">
+                    </div>
+                </div>
+                <div id="imageListContainer" style="display: none; margin: 20px 0;">
+                    <div class="section-title">图片列表 (<span id="imageCount">0</span> 张)</div>
+                    <div style="display: flex; gap: 10px; margin-bottom: 10px;">
+                        <button class="btn btn-secondary" onclick="previousImage()">⬅️ 上一张</button>
+                        <button class="btn btn-secondary" onclick="nextImage()">下一张 ➡️</button>
+                        <span style="line-height: 45px; margin-left: 10px;">
+                            当前: <strong id="currentImageIndex">0</strong> / <strong id="totalImages">0</strong>
+                            <span id="labeledStatus" style="margin-left: 10px;"></span>
+                        </span>
+                    </div>
                 </div>
                 <div class="canvas-container">
                     <canvas id="annotationCanvas" width="800" height="600"></canvas>
@@ -717,6 +769,9 @@ def index():
         let currentImage = null;
         let isDrawing = false;
         let startX, startY;
+        let imageList = [];
+        let currentImageIdx = -1;
+        let isFolderMode = false;
 
         function switchTab(tabName) {{
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
@@ -753,6 +808,138 @@ def index():
                 </li>`
             ).join('');
             document.getElementById('classList').innerHTML = listHtml;
+        }}
+
+        async function updateDatasetPath() {{
+            const path = document.getElementById('datasetPath').value.trim();
+            if (!path) {{
+                alert('请输入数据集路径');
+                return;
+            }}
+            const response = await fetch('/api/dataset-path', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{path: path}})
+            }});
+            if (response.ok) {{
+                const data = await response.json();
+                alert('数据集路径已更新: ' + data.dataset_path);
+                location.reload();
+            }} else {{
+                alert('更新失败');
+            }}
+        }}
+
+        async function loadFolderImages() {{
+            const folderPath = document.getElementById('folderPath').value.trim();
+            if (!folderPath) {{
+                alert('请输入文件夹路径');
+                return;
+            }}
+            const datasetType = document.getElementById('datasetType').value;
+            const response = await fetch('/api/folder-images', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{
+                    folder_path: folderPath,
+                    dataset_type: datasetType
+                }})
+            }});
+            if (response.ok) {{
+                const data = await response.json();
+                imageList = data.images;
+                isFolderMode = true;
+                document.getElementById('imageListContainer').style.display = 'block';
+                document.getElementById('imageCount').textContent = data.total;
+                document.getElementById('totalImages').textContent = data.total;
+
+                // 自动跳转到第一张未标注的图片
+                const firstUnlabeled = imageList.findIndex(img => !img.labeled);
+                currentImageIdx = firstUnlabeled >= 0 ? firstUnlabeled : 0;
+                loadImageAtIndex(currentImageIdx);
+            }} else {{
+                alert('加载文件夹失败');
+            }}
+        }}
+
+        function loadImageAtIndex(idx) {{
+            if (idx < 0 || idx >= imageList.length) return;
+            currentImageIdx = idx;
+            const imageInfo = imageList[idx];
+
+            // 更新UI
+            document.getElementById('currentImageIndex').textContent = idx + 1;
+            const statusEl = document.getElementById('labeledStatus');
+            if (imageInfo.labeled) {{
+                statusEl.innerHTML = '<span style="color: green;">✓ 已标注</span>';
+            }} else {{
+                statusEl.innerHTML = '<span style="color: orange;">⚠ 未标注</span>';
+            }}
+
+            // 通过 API 加载图片
+            fetch('/api/load-image', {{
+                method: 'POST',
+                headers: {{'Content-Type': 'application/json'}},
+                body: JSON.stringify({{path: imageInfo.path}})
+            }})
+                .then(res => res.blob())
+                .then(blob => {{
+                    const reader = new FileReader();
+                    reader.onload = function(e) {{
+                        const img = new Image();
+                        img.onload = function() {{
+                            canvas = document.getElementById('annotationCanvas');
+                            ctx = canvas.getContext('2d');
+                            const maxWidth = 800;
+                            const maxHeight = 600;
+                            let width = img.width;
+                            let height = img.height;
+                            if (width > maxWidth) {{
+                                height = height * (maxWidth / width);
+                                width = maxWidth;
+                            }}
+                            if (height > maxHeight) {{
+                                width = width * (maxHeight / height);
+                                height = maxHeight;
+                            }}
+                            canvas.width = width;
+                            canvas.height = height;
+                            ctx.drawImage(img, 0, 0, width, height);
+                            currentImage = img;
+                            annotations = [];
+                            canvas.onmousedown = startDrawing;
+                            canvas.onmousemove = draw;
+                            canvas.onmouseup = stopDrawing;
+                        }};
+                        img.src = e.target.result;
+                    }};
+                    reader.readAsDataURL(blob);
+                }})
+                .catch(err => {{
+                    alert('加载图片失败: ' + err);
+                }});
+        }}
+
+        function nextImage() {{
+            if (currentImageIdx < imageList.length - 1) {{
+                loadImageAtIndex(currentImageIdx + 1);
+            }} else {{
+                alert('已经是最后一张图片了');
+            }}
+        }}
+
+        function previousImage() {{
+            if (currentImageIdx > 0) {{
+                loadImageAtIndex(currentImageIdx - 1);
+            }} else {{
+                alert('已经是第一张图片了');
+            }}
+        }}
+
+        function loadSingleImage() {{
+            isFolderMode = false;
+            document.getElementById('imageListContainer').style.display = 'none';
+            loadImage();
         }}
 
         function loadImage() {{
@@ -854,22 +1041,73 @@ def index():
                 alert('请先标注物体');
                 return;
             }}
-            const file = document.getElementById('imageUpload').files[0];
+
             const datasetType = document.getElementById('datasetType').value;
             const formData = new FormData();
-            formData.append('image', file);
+
+            if (isFolderMode) {{
+                // 文件夹模式：通过 API 读取文件
+                const currentImageInfo = imageList[currentImageIdx];
+                const response = await fetch('/api/load-image', {{
+                    method: 'POST',
+                    headers: {{'Content-Type': 'application/json'}},
+                    body: JSON.stringify({{path: currentImageInfo.path}})
+                }});
+                const blob = await response.blob();
+                formData.append('image', blob, currentImageInfo.name);
+            }} else {{
+                // 单文件模式
+                const file = document.getElementById('imageUpload').files[0];
+                formData.append('image', file);
+            }}
+
             formData.append('dataset_type', datasetType);
             formData.append('annotations', JSON.stringify(annotations));
             formData.append('image_width', canvas.width);
             formData.append('image_height', canvas.height);
-            const response = await fetch('/api/save-annotation', {{
+
+            const saveResponse = await fetch('/api/save-annotation', {{
                 method: 'POST',
                 body: formData
             }});
-            if (response.ok) {{
+
+            if (saveResponse.ok) {{
                 alert('标注保存成功！');
                 annotations = [];
-                location.reload();
+
+                if (isFolderMode) {{
+                    // 更新当前图片的标注状态
+                    imageList[currentImageIdx].labeled = true;
+
+                    // 自动跳转到下一张未标注的图片
+                    let nextUnlabeledIdx = -1;
+                    for (let i = currentImageIdx + 1; i < imageList.length; i++) {{
+                        if (!imageList[i].labeled) {{
+                            nextUnlabeledIdx = i;
+                            break;
+                        }}
+                    }}
+
+                    if (nextUnlabeledIdx === -1) {{
+                        // 如果后面没有未标注的，从头找
+                        for (let i = 0; i < currentImageIdx; i++) {{
+                            if (!imageList[i].labeled) {{
+                                nextUnlabeledIdx = i;
+                                break;
+                            }}
+                        }}
+                    }}
+
+                    if (nextUnlabeledIdx !== -1) {{
+                        loadImageAtIndex(nextUnlabeledIdx);
+                    }} else {{
+                        alert('恭喜！所有图片都已标注完成！');
+                        // 重新加载当前图片以显示已标注状态
+                        loadImageAtIndex(currentImageIdx);
+                    }}
+                }} else {{
+                    location.reload();
+                }}
             }} else {{
                 alert('保存失败');
             }}
@@ -1095,6 +1333,75 @@ def test_model():
 def list_models():
     """列出所有可用模型"""
     return jsonify({'models': get_available_models()})
+
+@app.route('/api/dataset-path', methods=['GET'])
+def get_dataset_path():
+    """获取当前数据集路径"""
+    return jsonify({'dataset_path': str(DATASET_DIR.absolute())})
+
+@app.route('/api/dataset-path', methods=['POST'])
+def set_dataset_path():
+    """设置数据集路径"""
+    global DATASET_DIR
+    try:
+        data = request.json
+        new_path = Path(data['path'])
+
+        # 确保目录结构
+        DATASET_DIR = ensure_dataset_structure(new_path)
+        save_dataset_config(DATASET_DIR)
+
+        return jsonify({
+            'success': True,
+            'dataset_path': str(DATASET_DIR.absolute())
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/folder-images', methods=['POST'])
+def load_folder_images():
+    """从文件夹加载图片列表"""
+    try:
+        data = request.json
+        folder_path = Path(data['folder_path'])
+        dataset_type = data.get('dataset_type', 'train')
+
+        if not folder_path.exists() or not folder_path.is_dir():
+            return jsonify({'success': False, 'error': '文件夹不存在'}), 400
+
+        # 支持的图片格式
+        image_extensions = {'.jpg', '.jpeg', '.png', '.bmp', '.webp', '.tiff'}
+        images = []
+
+        for file in folder_path.iterdir():
+            if file.suffix.lower() in image_extensions:
+                images.append({
+                    'path': str(file.absolute()),
+                    'name': file.name,
+                    'labeled': (DATASET_DIR / 'labels' / dataset_type / f'{file.stem}.txt').exists()
+                })
+
+        return jsonify({
+            'success': True,
+            'images': sorted(images, key=lambda x: x['name']),
+            'total': len(images)
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/load-image', methods=['POST'])
+def load_image_file():
+    """从本地文件系统读取图片"""
+    try:
+        data = request.json
+        image_path = Path(data['path'])
+
+        if not image_path.exists() or not image_path.is_file():
+            return jsonify({'success': False, 'error': '图片文件不存在'}), 400
+
+        return send_file(str(image_path), mimetype='image/jpeg')
+    except Exception as e:
+        return str(e), 500
 
 if __name__ == '__main__':
     print("\n" + "=" * 70)
