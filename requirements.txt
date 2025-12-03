@@ -20,6 +20,9 @@ python-multipart>=0.0.6
 # 工具库
 werkzeug>=3.0.0
 
+# 打包工具
+pyinstaller>=6.0.0
+
 # 可选（加速训练）
 # tensorboard  # 训练可视化
 # onnx         # 模型导出

@@ -36,7 +36,11 @@ ENV/
 # YOLO工作目录
 yolo_workspace/
 runs/
-*.pt
+
+# YOLO模型文件（但保留根目录的预训练模型）
+# *.pt  # 注释掉，改用下面的规则
+yolo_workspace/**/*.pt
+runs/**/*.pt
 *.pth
 *.weights
 *.onnx
