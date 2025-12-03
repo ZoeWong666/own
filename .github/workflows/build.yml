@@ -42,14 +42,20 @@ jobs:
     needs: [build-windows]
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
     steps:
-      - name: Download all artifacts
+      - name: Download Windows artifact
         uses: actions/download-artifact@v4
+        with:
+          name: YOLOv8训练系统-Windows
+          path: ./artifacts
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: |
-            YOLOv8训练系统-Windows/YOLOv8训练系统-Windows.zip
+          files: ./artifacts/YOLOv8训练系统-Windows.zip
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
