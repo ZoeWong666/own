@@ -1,17 +1,16 @@
 """
-YOLOv8 完整训练系统 - 包含标注、训练、测试功能
-使用Flask创建友好的Web界面
+YOLOv8 完整训练系统 V2 - 包含标注、训练、测试功能
+新增：模型选择、更多训练参数
 """
-from flask import Flask, render_template, request, jsonify, send_file, send_from_directory
+from flask import Flask, request, jsonify, send_file
 from werkzeug.utils import secure_filename
 import os
 import json
-import shutil
+import glob
 from pathlib import Path
 import yaml
 from PIL import Image
 import io
-import base64
 from ultralytics import YOLO
 import cv2
 import numpy as np
@@ -32,10 +31,6 @@ DATASET_DIR.mkdir(exist_ok=True)
 (DATASET_DIR / 'labels' / 'train').mkdir(parents=True, exist_ok=True)
 (DATASET_DIR / 'labels' / 'val').mkdir(parents=True, exist_ok=True)
 
-# 临时上传目录
-UPLOAD_DIR = WORKSPACE / 'uploads'
-UPLOAD_DIR.mkdir(exist_ok=True)
-
 # 训练模型保存目录
 MODELS_DIR = WORKSPACE / 'models'
 MODELS_DIR.mkdir(exist_ok=True)
@@ -55,9 +50,36 @@ def save_classes(classes):
     with open(CLASSES_FILE, 'w', encoding='utf-8') as f:
         json.dump(classes, f, ensure_ascii=False, indent=2)
 
+def get_available_models():
+    """获取所有可用的模型"""
+    models = []
+
+    # 预训练模型
+    pretrained = ['yolov8n.pt', 'yolov8s.pt', 'yolov8m.pt', 'yolov8l.pt', 'yolov8x.pt']
+    for model in pretrained:
+        if Path(model).exists():
+            models.append({
+                'path': model,
+                'name': f'预训练-{model}',
+                'type': 'pretrained'
+            })
+
+    # 自定义训练的模型
+    custom_models = glob.glob(str(MODELS_DIR / '**' / 'weights' / '*.pt'), recursive=True)
+    for model_path in custom_models:
+        rel_path = Path(model_path).relative_to(MODELS_DIR.parent)
+        model_name = Path(model_path).parent.parent.name
+        models.append({
+            'path': str(model_path),
+            'name': f'自定义-{model_name}',
+            'type': 'custom'
+        })
+
+    return models
+
 @app.route('/')
 def index():
-    """主页 - 工作台"""
+    """主页"""
     classes = load_classes()
 
     # 统计数据
@@ -74,13 +96,15 @@ def index():
         'val_labeled': len(val_labels)
     }
 
+    available_models = get_available_models()
+
     html = f'''
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>YOLOv8 训练系统</title>
+    <title>YOLOv8 训练系统 V2</title>
     <style>
         * {{
             margin: 0;
@@ -122,6 +146,7 @@ def index():
             display: flex;
             border-bottom: 2px solid #e0e0e0;
             margin-bottom: 30px;
+            flex-wrap: wrap;
         }}
 
         .tab {{
@@ -211,6 +236,11 @@ def index():
             box-shadow: 0 10px 25px rgba(102, 126, 234, 0.5);
         }}
 
+        .btn:disabled {{
+            opacity: 0.5;
+            cursor: not-allowed;
+        }}
+
         .btn-secondary {{
             background: linear-gradient(45deg, #48c6ef 0%, #6f86d6 100%);
         }}
@@ -228,11 +258,24 @@ def index():
             margin-bottom: 20px;
         }}
 
+        .form-row {{
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 20px;
+        }}
+
         label {{
             display: block;
             margin-bottom: 8px;
             color: #333;
             font-weight: 500;
+        }}
+
+        .help-text {{
+            font-size: 0.85em;
+            color: #666;
+            margin-top: -10px;
+            margin-bottom: 15px;
         }}
 
         .info-box {{
@@ -266,6 +309,7 @@ def index():
             font-family: monospace;
             margin: 10px 0;
             border: 1px solid #ddd;
+            font-size: 0.9em;
         }}
 
         .class-list {{
@@ -305,11 +349,6 @@ def index():
             background: #f0f0f0;
         }}
 
-        .canvas-container {{
-            position: relative;
-            margin: 20px 0;
-        }}
-
         .btn-group {{
             display: flex;
             gap: 10px;
@@ -326,12 +365,26 @@ def index():
             overflow-y: auto;
             margin: 20px 0;
         }}
+
+        .param-card {{
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        }}
+
+        .param-card h3 {{
+            color: #667eea;
+            margin-bottom: 15px;
+            font-size: 1.1em;
+        }}
     </style>
 </head>
 <body>
     <div class="container">
-        <h1>🎯 YOLOv8 训练系统</h1>
-        <p class="subtitle">数据标注 → 模型训练 → 效果测试 一站式解决方案</p>
+        <h1>🎯 YOLOv8 训练系统 V2</h1>
+        <p class="subtitle">数据标注 → 模型训练 → 效果测试 | 专业版</p>
 
         <div class="stats">
             <div class="stat-card">
@@ -367,25 +420,20 @@ def index():
         <div id="classes-tab" class="tab-content active">
             <div class="section">
                 <div class="section-title">📝 定义检测类别</div>
-
                 <div class="info-box">
-                    <strong>💡 提示:</strong> 先定义你要检测的物体类别，例如：人、车、狗、猫、椅子
+                    <strong>💡 提示:</strong> 先定义你要检测的物体类别，例如：person, car, dog, cat, chair
                 </div>
-
                 <div class="form-group">
                     <label>输入类别名称（中文或英文）</label>
                     <input type="text" id="classInput" placeholder="例如: person, car, dog" onkeypress="if(event.key==='Enter')addClass()">
                 </div>
-
                 <button class="btn" onclick="addClass()">➕ 添加类别</button>
-
                 <div style="margin-top: 30px;">
                     <div class="section-title">当前类别列表</div>
                     <ul class="class-list" id="classList">
                         {''.join([f'<li class="class-item"><span class="class-name">{cls}</span><span class="class-id">ID: {i}</span></li>' for i, cls in enumerate(classes)])}
                     </ul>
                 </div>
-
                 <div class="path-box">
                     <strong>📁 数据集路径:</strong><br>
                     {DATASET_DIR.absolute()}
@@ -397,7 +445,6 @@ def index():
         <div id="annotate-tab" class="tab-content">
             <div class="section">
                 <div class="section-title">🖼️ 图片标注</div>
-
                 <div class="info-box">
                     <strong>💡 使用说明:</strong>
                     <ol style="margin-left: 20px; margin-top: 10px;">
@@ -407,7 +454,6 @@ def index():
                         <li>重复以上步骤标注所有图片</li>
                     </ol>
                 </div>
-
                 <div class="form-group">
                     <label>选择数据集类型</label>
                     <select id="datasetType">
@@ -415,21 +461,17 @@ def index():
                         <option value="val">验证集 (20%图片)</option>
                     </select>
                 </div>
-
                 <div class="form-group">
                     <label>上传图片</label>
                     <input type="file" id="imageUpload" accept="image/*" onchange="loadImage()" multiple>
                 </div>
-
                 <div class="canvas-container">
                     <canvas id="annotationCanvas" width="800" height="600"></canvas>
                 </div>
-
                 <div class="btn-group">
                     <button class="btn btn-secondary" onclick="clearAnnotations()">🗑️ 清除标注</button>
                     <button class="btn" onclick="saveAnnotations()">💾 保存标注</button>
                 </div>
-
                 <div class="path-box">
                     <strong>📁 图片保存位置:</strong><br>
                     训练集: {(DATASET_DIR / 'images' / 'train').absolute()}<br>
@@ -444,8 +486,7 @@ def index():
         <!-- 标签页3: 开始训练 -->
         <div id="train-tab" class="tab-content">
             <div class="section">
-                <div class="section-title">🚀 模型训练</div>
-
+                <div class="section-title">🚀 模型训练 - 高级参数</div>
                 <div class="warning-box">
                     <strong>⚠️ 训练前检查:</strong>
                     <ul style="margin-left: 20px; margin-top: 10px;">
@@ -456,27 +497,154 @@ def index():
                     </ul>
                 </div>
 
-                <div class="form-group">
-                    <label>选择模型大小</label>
-                    <select id="modelSize">
-                        <option value="yolov8n.pt">Nano (最快，适合实时检测)</option>
-                        <option value="yolov8s.pt">Small (平衡速度和精度)</option>
-                        <option value="yolov8m.pt">Medium (更高精度)</option>
-                        <option value="yolov8l.pt">Large (最高精度，较慢)</option>
-                    </select>
+                <!-- 基础参数 -->
+                <div class="param-card">
+                    <h3>🎯 基础参数</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>模型大小</label>
+                            <select id="modelSize">
+                                <option value="yolov8n.pt">Nano - 最快 (3.2M参数)</option>
+                                <option value="yolov8s.pt">Small - 平衡 (11.2M参数)</option>
+                                <option value="yolov8m.pt">Medium - 高精度 (25.9M参数)</option>
+                                <option value="yolov8l.pt">Large - 更高精度 (43.7M参数)</option>
+                                <option value="yolov8x.pt">XLarge - 最高精度 (68.2M参数)</option>
+                            </select>
+                            <div class="help-text">建议：实时检测用Nano，高精度用Large</div>
+                        </div>
+                        <div class="form-group">
+                            <label>训练轮数 (Epochs)</label>
+                            <input type="number" id="epochs" value="100" min="1" max="1000">
+                            <div class="help-text">建议：100-300轮，数据少用更多轮数</div>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>批次大小 (Batch Size)</label>
+                            <input type="number" id="batchSize" value="16" min="1" max="128">
+                            <div class="help-text">建议：16-32，显存不足时减小</div>
+                        </div>
+                        <div class="form-group">
+                            <label>图片大小 (Image Size)</label>
+                            <input type="number" id="imgSize" value="640" min="320" max="1280" step="32">
+                            <div class="help-text">建议：640标准，1280高精度</div>
+                        </div>
+                    </div>
                 </div>
 
-                <div class="form-group">
-                    <label>训练轮数 (Epochs)</label>
-                    <input type="number" id="epochs" value="100" min="1">
+                <!-- 优化器参数 -->
+                <div class="param-card">
+                    <h3>⚙️ 优化器参数</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>学习率 (Learning Rate)</label>
+                            <input type="number" id="lr" value="0.01" min="0.0001" max="0.1" step="0.001">
+                            <div class="help-text">默认：0.01，数据少时可减小到0.001</div>
+                        </div>
+                        <div class="form-group">
+                            <label>动量 (Momentum)</label>
+                            <input type="number" id="momentum" value="0.937" min="0.5" max="0.999" step="0.001">
+                            <div class="help-text">默认：0.937</div>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>权重衰减 (Weight Decay)</label>
+                            <input type="number" id="weightDecay" value="0.0005" min="0" max="0.01" step="0.0001">
+                            <div class="help-text">防止过拟合，默认：0.0005</div>
+                        </div>
+                        <div class="form-group">
+                            <label>预热轮数 (Warmup Epochs)</label>
+                            <input type="number" id="warmupEpochs" value="3" min="0" max="10">
+                            <div class="help-text">学习率预热，默认：3轮</div>
+                        </div>
+                    </div>
                 </div>
 
-                <div class="form-group">
-                    <label>批次大小 (Batch Size)</label>
-                    <input type="number" id="batchSize" value="16" min="1">
+                <!-- 数据增强 -->
+                <div class="param-card">
+                    <h3>🎨 数据增强</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>色调偏移 (HSV-H)</label>
+                            <input type="number" id="hsvH" value="0.015" min="0" max="0.1" step="0.001">
+                            <div class="help-text">颜色变化，默认：0.015</div>
+                        </div>
+                        <div class="form-group">
+                            <label>饱和度偏移 (HSV-S)</label>
+                            <input type="number" id="hsvS" value="0.7" min="0" max="1" step="0.1">
+                            <div class="help-text">饱和度变化，默认：0.7</div>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>亮度偏移 (HSV-V)</label>
+                            <input type="number" id="hsvV" value="0.4" min="0" max="1" step="0.1">
+                            <div class="help-text">亮度变化，默认：0.4</div>
+                        </div>
+                        <div class="form-group">
+                            <label>旋转角度 (Degrees)</label>
+                            <input type="number" id="degrees" value="0" min="0" max="45">
+                            <div class="help-text">随机旋转，0表示不旋转</div>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>翻转概率 (Flip LR)</label>
+                            <input type="number" id="flipLr" value="0.5" min="0" max="1" step="0.1">
+                            <div class="help-text">左右翻转概率，默认：0.5</div>
+                        </div>
+                        <div class="form-group">
+                            <label>马赛克增强</label>
+                            <input type="number" id="mosaic" value="1.0" min="0" max="1" step="0.1">
+                            <div class="help-text">拼接4张图，默认：1.0开启</div>
+                        </div>
+                    </div>
                 </div>
 
-                <button class="btn" onclick="startTraining()">🎯 开始训练</button>
+                <!-- 其他参数 -->
+                <div class="param-card">
+                    <h3>🔧 其他参数</h3>
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>早停耐心值 (Patience)</label>
+                            <input type="number" id="patience" value="50" min="0" max="100">
+                            <div class="help-text">多少轮无提升则停止，0表示不早停</div>
+                        </div>
+                        <div class="form-group">
+                            <label>置信度阈值 (Confidence)</label>
+                            <input type="number" id="confThresh" value="0.25" min="0" max="1" step="0.05">
+                            <div class="help-text">预测时的置信度阈值</div>
+                        </div>
+                    </div>
+
+                    <div class="form-row">
+                        <div class="form-group">
+                            <label>IoU阈值</label>
+                            <input type="number" id="iouThresh" value="0.7" min="0" max="1" step="0.05">
+                            <div class="help-text">NMS IoU阈值</div>
+                        </div>
+                        <div class="form-group">
+                            <label>工作线程数 (Workers)</label>
+                            <input type="number" id="workers" value="8" min="0" max="16">
+                            <div class="help-text">数据加载线程数，默认：8</div>
+                        </div>
+                    </div>
+
+                    <div class="form-group">
+                        <label>实验名称</label>
+                        <input type="text" id="projectName" value="custom_model" placeholder="给你的模型起个名字">
+                        <div class="help-text">模型将保存在: models/runs/detect/实验名称/</div>
+                    </div>
+                </div>
+
+                <button class="btn" onclick="startTraining()" style="width: 100%; font-size: 1.3em; padding: 18px;">
+                    🎯 开始训练
+                </button>
 
                 <div id="trainingOutput" class="training-output" style="display:none;">
                     训练日志将显示在这里...
@@ -484,7 +652,7 @@ def index():
 
                 <div class="path-box">
                     <strong>💾 模型保存位置:</strong><br>
-                    {MODELS_DIR.absolute()}/runs/detect/custom_model/weights/best.pt
+                    {MODELS_DIR.absolute()}/runs/detect/[实验名称]/weights/best.pt
                 </div>
             </div>
         </div>
@@ -493,9 +661,20 @@ def index():
         <div id="test-tab" class="tab-content">
             <div class="section">
                 <div class="section-title">🧪 测试模型</div>
-
                 <div class="info-box">
-                    <strong>💡 提示:</strong> 上传图片测试训练好的模型效果
+                    <strong>💡 提示:</strong> 选择模型并上传图片测试检测效果
+                </div>
+
+                <div class="form-group">
+                    <label>选择测试模型</label>
+                    <select id="testModelSelect">
+                        <option value="">请选择模型...</option>
+                        {''.join([f'<option value="{m["path"]}">{m["name"]}</option>' for m in available_models])}
+                    </select>
+                    <div class="help-text">
+                        可用模型: {len(available_models)} 个
+                        {'(包含预训练模型和自定义训练模型)' if available_models else '(暂无可用模型，请先训练或下载预训练模型)'}
+                    </div>
                 </div>
 
                 <div class="form-group">
@@ -503,9 +682,29 @@ def index():
                     <input type="file" id="testImage" accept="image/*">
                 </div>
 
-                <button class="btn" onclick="testModel()">🔍 开始检测</button>
+                <div class="form-row">
+                    <div class="form-group">
+                        <label>置信度阈值</label>
+                        <input type="number" id="testConf" value="0.25" min="0" max="1" step="0.05">
+                        <div class="help-text">只显示置信度高于此值的检测结果</div>
+                    </div>
+                    <div class="form-group">
+                        <label>IoU阈值 (NMS)</label>
+                        <input type="number" id="testIou" value="0.45" min="0" max="1" step="0.05">
+                        <div class="help-text">去重时的IoU阈值</div>
+                    </div>
+                </div>
+
+                <button class="btn" onclick="testModel()" style="width: 100%;">🔍 开始检测</button>
 
                 <div id="testResult" style="margin-top: 20px;"></div>
+                <div id="testInfo" style="margin-top: 10px;"></div>
+
+                <div class="path-box">
+                    <strong>📂 可用模型位置:</strong><br>
+                    • 预训练模型: 当前目录/yolov8*.pt<br>
+                    • 自定义模型: {MODELS_DIR.absolute()}/runs/detect/*/weights/*.pt
+                </div>
             </div>
         </div>
     </div>
@@ -520,11 +719,8 @@ def index():
         let startX, startY;
 
         function switchTab(tabName) {{
-            // 隐藏所有标签页
             document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
-
-            // 显示选中的标签页
             document.getElementById(tabName + '-tab').classList.add('active');
             event.target.classList.add('active');
         }}
@@ -532,18 +728,15 @@ def index():
         async function addClass() {{
             const input = document.getElementById('classInput');
             const className = input.value.trim();
-
             if (!className) {{
                 alert('请输入类别名称');
                 return;
             }}
-
             const response = await fetch('/api/classes', {{
                 method: 'POST',
                 headers: {{'Content-Type': 'application/json'}},
                 body: JSON.stringify({{name: className}})
             }});
-
             if (response.ok) {{
                 const data = await response.json();
                 currentClasses = data.classes;
@@ -565,20 +758,16 @@ def index():
         function loadImage() {{
             const file = document.getElementById('imageUpload').files[0];
             if (!file) return;
-
             const reader = new FileReader();
             reader.onload = function(e) {{
                 const img = new Image();
                 img.onload = function() {{
                     canvas = document.getElementById('annotationCanvas');
                     ctx = canvas.getContext('2d');
-
-                    // 调整canvas大小
                     const maxWidth = 800;
                     const maxHeight = 600;
                     let width = img.width;
                     let height = img.height;
-
                     if (width > maxWidth) {{
                         height = height * (maxWidth / width);
                         width = maxWidth;
@@ -587,14 +776,10 @@ def index():
                         width = width * (maxHeight / height);
                         height = maxHeight;
                     }}
-
                     canvas.width = width;
                     canvas.height = height;
-
                     ctx.drawImage(img, 0, 0, width, height);
                     currentImage = img;
-
-                    // 设置鼠标事件
                     canvas.onmousedown = startDrawing;
                     canvas.onmousemove = draw;
                     canvas.onmouseup = stopDrawing;
@@ -613,16 +798,11 @@ def index():
 
         function draw(e) {{
             if (!isDrawing) return;
-
             const rect = canvas.getBoundingClientRect();
             const currentX = e.clientX - rect.left;
             const currentY = e.clientY - rect.top;
-
-            // 重绘图像和现有标注
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(currentImage, 0, 0, canvas.width, canvas.height);
-
-            // 绘制当前框
             ctx.strokeStyle = '#00ff00';
             ctx.lineWidth = 2;
             ctx.strokeRect(startX, startY, currentX - startX, currentY - startY);
@@ -631,15 +811,11 @@ def index():
         function stopDrawing(e) {{
             if (!isDrawing) return;
             isDrawing = false;
-
             const rect = canvas.getBoundingClientRect();
             const endX = e.clientX - rect.left;
             const endY = e.clientY - rect.top;
-
-            // 弹窗选择类别
             const classId = prompt('请输入类别ID (0-' + (currentClasses.length-1) + '):\\n' +
                 currentClasses.map((c, i) => i + ': ' + c).join('\\n'));
-
             if (classId !== null) {{
                 annotations.push({{
                     classId: parseInt(classId),
@@ -648,8 +824,6 @@ def index():
                     width: endX - startX,
                     height: endY - startY
                 }});
-
-                // 重绘所有标注
                 drawAllAnnotations();
             }}
         }}
@@ -657,12 +831,10 @@ def index():
         function drawAllAnnotations() {{
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.drawImage(currentImage, 0, 0, canvas.width, canvas.height);
-
             annotations.forEach(ann => {{
                 ctx.strokeStyle = '#00ff00';
                 ctx.lineWidth = 2;
                 ctx.strokeRect(ann.x, ann.y, ann.width, ann.height);
-
                 ctx.fillStyle = '#00ff00';
                 ctx.font = '14px Arial';
                 ctx.fillText(currentClasses[ann.classId], ann.x, ann.y - 5);
@@ -682,26 +854,22 @@ def index():
                 alert('请先标注物体');
                 return;
             }}
-
             const file = document.getElementById('imageUpload').files[0];
             const datasetType = document.getElementById('datasetType').value;
-
             const formData = new FormData();
             formData.append('image', file);
             formData.append('dataset_type', datasetType);
             formData.append('annotations', JSON.stringify(annotations));
             formData.append('image_width', canvas.width);
             formData.append('image_height', canvas.height);
-
             const response = await fetch('/api/save-annotation', {{
                 method: 'POST',
                 body: formData
             }});
-
             if (response.ok) {{
                 alert('标注保存成功！');
                 annotations = [];
-                location.reload();  // 刷新统计数据
+                location.reload();
             }} else {{
                 alert('保存失败');
             }}
@@ -713,38 +881,66 @@ def index():
                 return;
             }}
 
-            const modelSize = document.getElementById('modelSize').value;
-            const epochs = document.getElementById('epochs').value;
-            const batchSize = document.getElementById('batchSize').value;
+            // 收集所有参数
+            const params = {{
+                model: document.getElementById('modelSize').value,
+                epochs: parseInt(document.getElementById('epochs').value),
+                batch: parseInt(document.getElementById('batchSize').value),
+                imgsz: parseInt(document.getElementById('imgSize').value),
+                lr: parseFloat(document.getElementById('lr').value),
+                momentum: parseFloat(document.getElementById('momentum').value),
+                weight_decay: parseFloat(document.getElementById('weightDecay').value),
+                warmup_epochs: parseInt(document.getElementById('warmupEpochs').value),
+                hsv_h: parseFloat(document.getElementById('hsvH').value),
+                hsv_s: parseFloat(document.getElementById('hsvS').value),
+                hsv_v: parseFloat(document.getElementById('hsvV').value),
+                degrees: parseInt(document.getElementById('degrees').value),
+                fliplr: parseFloat(document.getElementById('flipLr').value),
+                mosaic: parseFloat(document.getElementById('mosaic').value),
+                patience: parseInt(document.getElementById('patience').value),
+                conf: parseFloat(document.getElementById('confThresh').value),
+                iou: parseFloat(document.getElementById('iouThresh').value),
+                workers: parseInt(document.getElementById('workers').value),
+                name: document.getElementById('projectName').value || 'custom_model'
+            }};
 
             document.getElementById('trainingOutput').style.display = 'block';
-            document.getElementById('trainingOutput').textContent = '准备开始训练...\\n';
+            document.getElementById('trainingOutput').textContent = '准备开始训练...\\n参数: ' + JSON.stringify(params, null, 2);
 
             const response = await fetch('/api/train', {{
                 method: 'POST',
                 headers: {{'Content-Type': 'application/json'}},
-                body: JSON.stringify({{
-                    model: modelSize,
-                    epochs: parseInt(epochs),
-                    batch: parseInt(batchSize)
-                }})
+                body: JSON.stringify(params)
             }});
 
             if (response.ok) {{
                 const data = await response.json();
-                document.getElementById('trainingOutput').textContent += data.message;
+                document.getElementById('trainingOutput').textContent += '\\n\\n' + data.message;
+            }} else {{
+                document.getElementById('trainingOutput').textContent += '\\n\\n训练失败！';
             }}
         }}
 
         async function testModel() {{
+            const modelPath = document.getElementById('testModelSelect').value;
             const file = document.getElementById('testImage').files[0];
+
+            if (!modelPath) {{
+                alert('请选择测试模型');
+                return;
+            }}
             if (!file) {{
-                alert('请先上传图片');
+                alert('请上传测试图片');
                 return;
             }}
 
             const formData = new FormData();
             formData.append('image', file);
+            formData.append('model_path', modelPath);
+            formData.append('conf', document.getElementById('testConf').value);
+            formData.append('iou', document.getElementById('testIou').value);
+
+            document.getElementById('testResult').innerHTML = '<p>检测中...</p>';
 
             const response = await fetch('/api/test', {{
                 method: 'POST',
@@ -756,6 +952,15 @@ def index():
                 const url = URL.createObjectURL(blob);
                 document.getElementById('testResult').innerHTML =
                     '<img src="' + url + '" style="max-width: 100%; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.1);">';
+
+                // 显示检测信息
+                const info = await response.headers.get('X-Detection-Info');
+                if (info) {{
+                    document.getElementById('testInfo').innerHTML =
+                        '<div class="success-box"><strong>检测完成！</strong><br>' + decodeURIComponent(info) + '</div>';
+                }}
+            }} else {{
+                document.getElementById('testResult').innerHTML = '<p style="color: red;">检测失败</p>';
             }}
         }}
     </script>
@@ -778,29 +983,25 @@ def save_annotation():
     """保存标注"""
     try:
         file = request.files['image']
-        dataset_type = request.form['dataset_type']  # train or val
+        dataset_type = request.form['dataset_type']
         annotations = json.loads(request.form['annotations'])
         img_width = float(request.form['image_width'])
         img_height = float(request.form['image_height'])
 
-        # 保存图片
         filename = secure_filename(file.filename)
         img_path = DATASET_DIR / 'images' / dataset_type / filename
         file.save(str(img_path))
 
-        # 保存标注文件 (YOLO格式)
         label_filename = Path(filename).stem + '.txt'
         label_path = DATASET_DIR / 'labels' / dataset_type / label_filename
 
         with open(label_path, 'w') as f:
             for ann in annotations:
-                # 转换为YOLO格式 (归一化坐标)
                 x_center = (ann['x'] + ann['width'] / 2) / img_width
                 y_center = (ann['y'] + ann['height'] / 2) / img_height
                 width = ann['width'] / img_width
                 height = ann['height'] / img_height
-
-                f.write(f"{ann['classId']} {x_center} {y_center} {width} {height}\\n")
+                f.write(f"{ann['classId']} {x_center} {y_center} {width} {height}\n")
 
         return jsonify({'success': True})
     except Exception as e:
@@ -810,10 +1011,9 @@ def save_annotation():
 def train_model():
     """开始训练"""
     try:
-        data = request.json
+        params = request.json
         classes = load_classes()
 
-        # 创建data.yaml
         data_yaml = {
             'path': str(DATASET_DIR.absolute()),
             'train': 'images/train',
@@ -826,23 +1026,39 @@ def train_model():
         with open(data_yaml_path, 'w', encoding='utf-8') as f:
             yaml.dump(data_yaml, f, allow_unicode=True)
 
-        # 开始训练
-        model = YOLO(data['model'])
+        model = YOLO(params['model'])
+
+        # 使用所有参数进行训练
         results = model.train(
             data=str(data_yaml_path),
-            epochs=data['epochs'],
-            batch=data['batch'],
-            imgsz=640,
-            name='custom_model',
-            patience=50,
+            epochs=params['epochs'],
+            batch=params['batch'],
+            imgsz=params['imgsz'],
+            lr0=params['lr'],
+            momentum=params['momentum'],
+            weight_decay=params['weight_decay'],
+            warmup_epochs=params['warmup_epochs'],
+            hsv_h=params['hsv_h'],
+            hsv_s=params['hsv_s'],
+            hsv_v=params['hsv_v'],
+            degrees=params['degrees'],
+            fliplr=params['fliplr'],
+            mosaic=params['mosaic'],
+            patience=params['patience'],
+            conf=params['conf'],
+            iou=params['iou'],
+            workers=params['workers'],
+            name=params['name'],
             save=True,
             device='cpu',
             project=str(MODELS_DIR)
         )
 
+        model_path = MODELS_DIR / 'runs' / 'detect' / params['name'] / 'weights' / 'best.pt'
+
         return jsonify({
             'success': True,
-            'message': f'训练完成！\\n模型保存在: {MODELS_DIR}/runs/detect/custom_model/weights/best.pt'
+            'message': f'训练完成！\n模型保存在: {model_path}'
         })
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
@@ -852,43 +1068,48 @@ def test_model():
     """测试模型"""
     try:
         file = request.files['image']
+        model_path = request.form.get('model_path', 'yolov8n.pt')
+        conf = float(request.form.get('conf', 0.25))
+        iou = float(request.form.get('iou', 0.45))
+
         image = Image.open(file.stream).convert('RGB')
 
-        # 查找最新的模型
-        model_path = MODELS_DIR / 'runs' / 'detect' / 'custom_model' / 'weights' / 'best.pt'
+        model = YOLO(model_path)
+        results = model.predict(image, conf=conf, iou=iou, verbose=False)[0]
 
-        if not model_path.exists():
-            # 使用预训练模型
-            model_path = 'yolov8n.pt'
+        # 统计检测结果
+        num_detections = len(results.boxes)
+        detection_info = f'检测到 {num_detections} 个物体'
 
-        model = YOLO(str(model_path))
-        results = model.predict(image, conf=0.25, verbose=False)[0]
-
-        # 绘制结果
         annotated_img = results.plot()
-
-        # 转换为bytes
         _, buffer = cv2.imencode('.jpg', annotated_img)
         img_bytes = io.BytesIO(buffer.tobytes())
 
-        return send_file(img_bytes, mimetype='image/jpeg')
+        response = send_file(img_bytes, mimetype='image/jpeg')
+        response.headers['X-Detection-Info'] = detection_info
+        return response
     except Exception as e:
         return str(e), 500
 
-if __name__ == '__main__':
-    print("\\n" + "=" * 70)
-    print("🎯 YOLOv8 训练系统")
-    print("=" * 70)
-    print("\\n✓ 服务器启动成功")
-    print("\\n浏览器访问: http://localhost:7864")
-    print("\\n功能:")
-    print("  1. 设置类别 - 定义要检测的物体类别")
-    print("  2. 标注数据 - 在图片上框选并标注物体")
-    print("  3. 开始训练 - 训练自定义检测模型")
-    print("  4. 测试模型 - 测试训练好的模型效果")
-    print("\\n数据集位置:")
-    print(f"  {DATASET_DIR.absolute()}")
-    print("\\n按 Ctrl+C 停止服务")
-    print("=" * 70 + "\\n")
+@app.route('/api/models', methods=['GET'])
+def list_models():
+    """列出所有可用模型"""
+    return jsonify({'models': get_available_models()})
 
-    app.run(host='0.0.0.0', port=7864, debug=False)
+if __name__ == '__main__':
+    print("\n" + "=" * 70)
+    print("🎯 YOLOv8 训练系统 V2 - 专业版")
+    print("=" * 70)
+    print("\n✓ 服务器启动成功")
+    print("\n浏览器访问: http://localhost:7865")
+    print("\n新功能:")
+    print("  ✅ 测试时可选择不同模型")
+    print("  ✅ 20+ 训练参数可调节")
+    print("  ✅ 完整的数据增强选项")
+    print("  ✅ 优化器参数自定义")
+    print("\n数据集位置:")
+    print(f"  {DATASET_DIR.absolute()}")
+    print("\n按 Ctrl+C 停止服务")
+    print("=" * 70 + "\n")
+
+    app.run(host='0.0.0.0', port=7865, debug=False)
