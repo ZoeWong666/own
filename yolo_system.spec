@@ -3,6 +3,8 @@
 PyInstaller 配置文件
 用于打包 YOLOv8 训练系统
 """
+import glob
+from pathlib import Path
 
 block_cipher = None
 
@@ -10,6 +12,17 @@ block_cipher = None
 datas = [
     ('yolov8n.pt', '.'),  # 预训练模型
 ]
+
+# 自动收集训练好的模型
+trained_models = glob.glob('yolo_workspace/models/**/weights/*.pt', recursive=True)
+if trained_models:
+    print(f"找到 {len(trained_models)} 个训练好的模型，将打包进去:")
+    for model_path in trained_models:
+        # 保持原目录结构
+        datas.append((model_path, str(Path(model_path).parent)))
+        print(f"  - {model_path}")
+else:
+    print("没有找到训练好的模型，只打包默认预训练模型")
 
 # 需要收集的隐藏导入
 hiddenimports = [
