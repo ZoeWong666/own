@@ -28,15 +28,17 @@ jobs:
           pyinstaller yolo_system.spec --clean
 
       - name: Create ZIP archive
+        shell: pwsh
         run: |
           cd dist
-          Compress-Archive -Path "YOLOv8训练系统" -DestinationPath "YOLOv8训练系统-Windows.zip"
+          $PSDefaultParameterValues['*:Encoding'] = 'utf8'
+          Compress-Archive -Path "YOLOv8训练系统" -DestinationPath "YOLOv8-Training-System-Windows.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: YOLOv8训练系统-Windows
-          path: dist/YOLOv8训练系统-Windows.zip
+          name: YOLOv8-Training-System-Windows
+          path: dist/YOLOv8-Training-System-Windows.zip
 
   create-release:
     needs: [build-windows]
@@ -48,13 +50,13 @@ jobs:
       - name: Download Windows artifact
         uses: actions/download-artifact@v4
         with:
-          name: YOLOv8训练系统-Windows
+          name: YOLOv8-Training-System-Windows
           path: ./artifacts
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: ./artifacts/YOLOv8训练系统-Windows.zip
+          files: ./artifacts/YOLOv8-Training-System-Windows.zip
           draft: false
           prerelease: false
         env:
