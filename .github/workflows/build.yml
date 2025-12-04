@@ -31,8 +31,9 @@ jobs:
         shell: pwsh
         run: |
           cd dist
-          $PSDefaultParameterValues['*:Encoding'] = 'utf8'
-          Compress-Archive -Path "YOLOv8训练系统" -DestinationPath "YOLOv8-Training-System-Windows.zip"
+          [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+          $sourcePath = Get-Item "YOLOv8训练系统"
+          Compress-Archive -Path $sourcePath.FullName -DestinationPath "YOLOv8-Training-System-Windows.zip" -Force
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
