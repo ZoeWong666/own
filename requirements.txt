@@ -22,6 +22,7 @@ werkzeug>=3.0.0
 
 # 打包工具
 pyinstaller>=6.0.0
+pywebview>=4.0.0  # 桌面客户端支持
 
 # 可选（加速训练）
 # tensorboard  # 训练可视化
